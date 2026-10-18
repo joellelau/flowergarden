@@ -4,9 +4,22 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Pixel Garden</title>
-<style>html, body { margin: 0; height: 100%; background: #E2DAC5; }</style>
+<style>
+  html, body { margin: 0; height: 100%; background: #E2DAC5; }
+  #clear-garden {
+    position: fixed; top: 16px; right: 16px; z-index: 1;
+    font: 600 11px/1 ui-monospace, Menlo, Consolas, monospace; letter-spacing: .12em; text-transform: uppercase;
+    color: #013148; background: #E2DAC5; border: 2px solid #013148; border-radius: 0;
+    box-shadow: 3px 3px 0 #013148; padding: 7px 10px 6px; cursor: pointer;
+  }
+  #clear-garden:hover { background: #013148; color: #E2DAC5; }
+  #clear-garden:active { transform: translate(3px, 3px); box-shadow: none; }
+  #clear-garden:focus-visible { outline: 2px dashed #013148; outline-offset: 3px; }
+</style>
 </head>
 <body>
+<button id="clear-garden" type="button" aria-label="Clear the garden"
+        onclick="document.querySelector('pixel-garden').clear()">clear garden</button>
 <pixel-garden fill></pixel-garden>
 <script>
 /*
