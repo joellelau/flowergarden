@@ -15,11 +15,18 @@
   #clear-garden:hover { background: #013148; color: #E2DAC5; }
   #clear-garden:active { transform: translate(3px, 3px); box-shadow: none; }
   #clear-garden:focus-visible { outline: 2px dashed #013148; outline-offset: 3px; }
+  #garden-hint {
+    position: fixed; top: 16px; left: 16px; z-index: 1; margin: 0; padding: 9px 0 0;
+    font: 600 11px/1 ui-monospace, Menlo, Consolas, monospace; letter-spacing: .12em; text-transform: uppercase;
+    color: #013148; pointer-events: none; transition: opacity .6s;
+  }
+  #garden-hint.hidden { opacity: 0; }
 </style>
 </head>
 <body>
 <button id="clear-garden" type="button" aria-label="Clear the garden"
         onclick="document.querySelector('pixel-garden').clear()">clear garden</button>
+<p id="garden-hint">click to start watering</p>
 <pixel-garden fill></pixel-garden>
 <script>
 /*
@@ -556,6 +563,12 @@
   }
   customElements.define('pixel-garden', PixelGarden);
 })();
+</script>
+<script>
+  // fade the hint out after the first watering
+  document.querySelector('pixel-garden').addEventListener('pointerdown', () => {
+    document.getElementById('garden-hint').classList.add('hidden');
+  }, { once: true });
 </script>
 </body>
 </html>
