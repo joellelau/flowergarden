@@ -1,0 +1,558 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pixel Garden</title>
+<style>
+  body { margin: 0; background: #E2DAC5; font-family: ui-monospace, Menlo, monospace; color: #013148; }
+  main { max-width: 720px; margin: 0 auto; padding: 32px 16px; }
+  p { font-size: 13px; letter-spacing: .04em; opacity: .8; }
+</style>
+</head>
+<body>
+<main>
+  <p>click to water →</p>
+
+  <!-- ===== EMBED: copy from here ===== -->
+  <pixel-garden style="height: 420px"></pixel-garden>
+  <script>
+  /*
+   * <pixel-garden> — click to water, a pixel flower grows.
+   * Inside the element the cursor becomes a watering can.
+   *
+   * Attributes (all optional):
+   *   pixel-size   size of one art pixel in CSS px (default 4)
+   *   ink          line colour   (default #013148)
+   *   paper        background    (default #E2DAC5)
+   *   max-flowers  oldest flowers are removed past this (default 60)
+   *   fill         fill the parent's height (use this in Framer / site-builder embeds)
+   * Flowers that wouldn't fit fully inside the box aren't planted or grown.
+   * More than 3 flowers brings butterflies; more than 4, the odd worm.
+   * Watering an existing flower makes it grow bigger (up to 5 times).
+   * Call gardenElement.clear() to clear it from your own code.
+   * Set the size with CSS, e.g. style="height: 420px" (width fills its container).
+   */
+  (() => {
+    if (customElements.get('pixel-garden')) return;
+
+    // ---------- watering can sprite ('#' ink, 'o' paper, ':' dithered, ' ' clear)
+    const CAN = [
+      '        #####  ',
+      '       #     # ',
+      '       #     # ',
+      ' #    #########',
+      '###   #ooooooo#',
+      '##o#  #ooooooo#',
+      '###o# #ooooooo#',
+      ' # #o##ooooooo#',
+      '    #o#:::::::#',
+      '     ##:::::::#',
+      '      #########',
+    ];
+    const CAN_POUR_ROWS = [
+      '        #####  ',
+      '       #     # ',
+      '       #     # ',
+      '      #########',
+      '      #ooooooo#',
+      '      #ooooooo#',
+      '      #ooooooo#',
+      '     ##ooooooo#',
+      '    #o#:::::::#',
+      '   #o##:::::::#',
+      '  #o# #########',
+      '####           ',
+      ' # #           ',
+    ];
+    const sprite = (rows, tip, lift) => {
+      const cells = [];
+      rows.forEach((r, y) => [...r].forEach((c, x) => c !== ' ' && cells.push({ x, y, c })));
+      return { cells, tip, lift };
+    };
+    // lift = how many cells above the landing spot the spout sits
+    const CAN_IDLE = sprite(CAN, { x: 0, y: 6 }, 9);
+    const CAN_POUR = sprite(CAN_POUR_ROWS, { x: 1, y: 12 }, 4);
+
+    const clamp01 = t => Math.max(0, Math.min(1, t));
+    const easeOut = t => 1 - Math.pow(1 - t, 3);
+    const easeBack = t => { const c = 1.6; t -= 1; return 1 + (c + 1) * t * t * t + c * t * t; };
+    const rand = (a, b) => a + Math.random() * (b - a);
+
+    const GROW_MS = 1700, GROW_DELAY = 260, GROW_MORE_MS = 800, MAX_LEVEL = 5;
+
+    // ---------- critters
+    const BF_OPEN = [
+      '    # #    ',
+      '###  #  ###',
+      '#::# # #::#',
+      '#:::###:::#',
+      ' #::###::# ',
+      '  #:###:#  ',
+      '  ## # ##  ',
+    ];
+    const BF_SHUT = [
+      '    # #    ',
+      '  ## # ##  ',
+      '  #:###:#  ',
+      '  #::#::#  ',
+      '   #:#:#   ',
+      '   #:#:#   ',
+      '    ###    ',
+    ];
+    const BUTTERFLIES_AFTER = 3, MAX_BUTTERFLIES = 3, WORMS_AFTER = 4;
+
+    class PixelGarden extends HTMLElement {
+      connectedCallback() {
+        if (this._init) return;
+        this._init = true;
+        const root = this.attachShadow({ mode: 'open' });
+        root.innerHTML = `<style>
+          :host{display:block;position:relative;width:100%;height:320px;cursor:none;touch-action:manipulation;user-select:none;-webkit-user-select:none}
+          canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+          :host([fill]){height:100%;min-height:200px}
+        </style><canvas></canvas>`;
+        this.canvas = root.querySelector('canvas');
+        this.ctx = this.canvas.getContext('2d');
+        this.ink = this.getAttribute('ink') || '#013148';
+        this.paper = this.getAttribute('paper') || '#E2DAC5';
+        this.px = +this.getAttribute('pixel-size') || 4;
+        this.maxFlowers = +this.getAttribute('max-flowers') || 60;
+        // inside an embed iframe, let the page itself fill the frame
+        if (this.hasAttribute('fill') && window.self !== window.top && this.parentElement === document.body) {
+          document.documentElement.style.height = document.body.style.height = '100%';
+          document.body.style.margin = '0';
+        }
+        this.style.setProperty('--ink', this.ink);
+        this.style.setProperty('--paper', this.paper);
+        this.reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+        this.plants = [];
+        this.drops = [];
+        this.splashes = [];
+        this.pointer = null;
+        this.pourUntil = 0;
+        this.butterflies = [];
+        this.worm = null;
+        this.nextWorm = 0;
+        this.nextButterfly = 0;
+        this.visible = true;
+        this.frame = document.createElement('canvas');
+        this.fctx = this.frame.getContext('2d');
+        this.still = document.createElement('canvas');
+        this.sctx = this.still.getContext('2d');
+
+        new ResizeObserver(() => this.resize()).observe(this);
+        // pause the critters while the garden is scrolled out of view
+        new IntersectionObserver(([e]) => { this.visible = e.isIntersecting; this.kick(); }).observe(this);
+        this.addEventListener('pointermove', e => { this.pointer = this.cell(e); this.kick(); });
+        this.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') { this.pointer = null; this.kick(); } });
+        this.addEventListener('pointerdown', e => this.water(this.cell(e), e.pointerType));
+        this.resize();
+      }
+
+      cell(e) {
+        const r = this.getBoundingClientRect();
+        const k = this.scale / (window.devicePixelRatio || 1);
+        return { x: Math.floor((e.clientX - r.left) / k), y: Math.floor((e.clientY - r.top) / k) };
+      }
+
+      resize() {
+        const dpr = window.devicePixelRatio || 1;
+        const w = Math.max(1, Math.round(this.clientWidth * dpr));
+        const h = Math.max(1, Math.round(this.clientHeight * dpr));
+        this.scale = Math.max(1, Math.round(this.px * dpr));
+        this.canvas.width = w; this.canvas.height = h;
+        this.cols = Math.ceil(w / this.scale); this.rows = Math.ceil(h / this.scale);
+        this.frame.width = this.still.width = this.cols;
+        this.frame.height = this.still.height = this.rows;
+        this.redrawStill();
+        this.kick();
+      }
+
+      redrawStill() {
+        const c = this.sctx;
+        c.fillStyle = this.paper; c.fillRect(0, 0, this.cols, this.rows);
+        for (const p of this.plants) if (p.done) this.drawPlant(c, p, 1, Infinity);
+      }
+
+      // true when the fully grown plant lies entirely inside the box
+      fits(p) {
+        let ok = true;
+        const cols = this.cols, rows = this.rows;
+        const probe = { set fillStyle(v) {}, fillRect(x, y) { if (x < 0 || y < 0 || x >= cols || y >= rows) ok = false; } };
+        this.drawPlant(probe, { ...p, grow: null }, 1, Infinity);
+        return ok;
+      }
+
+      drawRows(c, rows, ox, oy) {
+        rows.forEach((r, y) => [...r].forEach((ch, x) => {
+          if (ch === ' ') return;
+          const gx = ox + x, gy = oy + y;
+          c.fillStyle = ch === '#' || (ch === ':' && ((gx + gy) & 1) === 0) ? this.ink : this.paper;
+          c.fillRect(gx, gy, 1, 1);
+        }));
+      }
+
+      // where a butterfly sits on top of a bloom
+      perchPoint(p) {
+        const O = this.stemPoint(p, 1), k = 1 + (p.size - 1) * 0.7, H = p.head.H * k - 1;
+        return { x: O.x + H * Math.sin(p.head.tilt), y: O.y - H * Math.cos(p.head.tilt) - 4 };
+      }
+
+      pickTarget(b) {
+        const perches = this.plants.filter(p => p.done && p !== b.perch && !this.butterflies.some(o => o.perch === p));
+        if (perches.length && Math.random() < 0.5) {
+          b.perch = perches[Math.floor(Math.random() * perches.length)];
+        } else {
+          b.perch = null;
+          b.tx = rand(6, this.cols - 6); b.ty = rand(5, this.rows * 0.7);
+        }
+      }
+
+      makeButterfly() {
+        const left = Math.random() < 0.5;
+        const b = { x: left ? -6 : this.cols + 6, y: rand(this.rows * 0.15, this.rows * 0.6), vx: 0, vy: 0,
+                    phase: rand(0, 6.28), state: 'fly', perch: null, leaving: false, side: left ? -1 : 1 };
+        this.pickTarget(b);
+        return b;
+      }
+
+      updateButterflies(now, dt) {
+        const want = this.plants.length > BUTTERFLIES_AFTER ? Math.min(MAX_BUTTERFLIES, this.plants.length - BUTTERFLIES_AFTER) : 0;
+        const active = this.butterflies.filter(b => !b.leaving);
+        if (active.length < want && now >= this.nextButterfly) { this.butterflies.push(this.makeButterfly()); this.nextButterfly = now + 1800; }
+        active.slice(want).forEach(b => { b.leaving = true; b.state = 'fly'; b.perch = null; });
+
+        for (const b of this.butterflies) {
+          if (b.perch && !this.plants.includes(b.perch)) { b.state = 'fly'; this.pickTarget(b); }
+          if (b.state === 'rest') {
+            if (now > b.restUntil) { b.state = 'fly'; this.pickTarget(b); }
+            continue;
+          }
+          let tx = b.tx, ty = b.ty;
+          if (b.leaving) { tx = b.side < 0 ? -12 : this.cols + 12; ty = b.y - 4; }
+          else if (b.perch) { const q = this.perchPoint(b.perch); tx = q.x; ty = q.y; }
+          const dx = tx - b.x, dy = ty - b.y, d = Math.hypot(dx, dy) || 1;
+          const speed = Math.min(16, 3 + d * 1.5);
+          const k = Math.min(1, dt * 2.2);
+          b.vx += (dx / d * speed - b.vx) * k;
+          b.vy += (dy / d * speed - b.vy) * k;
+          if (!b.leaving && d < 3) {   // ease in for the landing instead of overshooting
+            b.x += dx * Math.min(1, dt * 5); b.y += dy * Math.min(1, dt * 5);
+            b.vx *= 0.8; b.vy *= 0.8;
+          } else { b.x += b.vx * dt; b.y += b.vy * dt; }
+          if (b.leaving) { if (b.x < -10 || b.x > this.cols + 10) b.gone = true; }
+          else if (d < 0.6) {
+            if (b.perch) { b.state = 'rest'; b.x = tx; b.y = ty; b.restUntil = now + rand(2500, 5500); }
+            else this.pickTarget(b);
+          }
+        }
+        this.butterflies = this.butterflies.filter(b => !b.gone);
+      }
+
+      drawButterflies(c, now) {
+        for (const b of this.butterflies) {
+          let open, bob = 0;
+          if (b.state === 'rest') open = ((now + b.phase * 300) % 1700) < 170;   // the odd slow flap
+          else { open = Math.floor(now / 110 + b.phase) % 2 === 0; bob = Math.sin(now / 170 + b.phase) * 0.7; }
+          this.drawRows(c, open ? BF_OPEN : BF_SHUT, Math.round(b.x) - 5, Math.round(b.y + bob) - 4);
+        }
+      }
+
+      updateWorm(now) {
+        if (this.plants.length <= WORMS_AFTER) { this.nextWorm = now + rand(1500, 4000); return; }
+        if (this.worm) { if (now > this.worm.start + this.worm.dur) { this.worm = null; this.nextWorm = now + rand(6000, 14000); } return; }
+        if (now < this.nextWorm) return;
+        const homes = this.plants.filter(p => p.done);
+        for (let i = 0; i < 6 && homes.length; i++) {
+          const p = homes[Math.floor(Math.random() * homes.length)];
+          const x = p.bx + (Math.random() < 0.5 ? -1 : 1) * Math.round(rand(6, 10)), y = p.by;
+          if (x >= 3 && x <= this.cols - 6 && y - 10 >= 0 && y + 1 < this.rows) {
+            this.worm = { x, y, start: now, dur: rand(3500, 5500), phase: rand(0, 6.28) };
+            return;
+          }
+        }
+        this.nextWorm = now + 2000;
+      }
+
+      drawWorm(c, now) {
+        const w = this.worm; if (!w) return;
+        const t = now - w.start, H = 7;
+        const h = Math.round(H * clamp01(Math.min(t / 500, (w.dur - t) / 500)));
+        const dot = (x, y, on) => { c.fillStyle = on ? this.ink : this.paper; c.fillRect(x, y, 1, 1); };
+        // a little dithered mound with a hole in it
+        for (let dx = -3; dx <= 5; dx++) if (((w.x + dx + w.y) & 1) === 0) dot(w.x + dx, w.y, true);
+        for (let dx = -1; dx <= 3; dx++) if (((w.x + dx + w.y - 1) & 1) === 0) dot(w.x + dx, w.y - 1, true);
+        dot(w.x, w.y, true); dot(w.x + 1, w.y, true); dot(w.x + 2, w.y, true);
+        // smooth body that leans and sways more towards the head
+        const lean = Math.sin(now / 330 + w.phase) * 1.6;
+        for (let r = 1; r <= h; r++) {
+          const x = w.x + 1 + Math.round(lean * ((r - 1) / (H - 1)) ** 1.6), y = w.y - r;
+          if (r === h && h >= 3) {
+            // head: a little wider, with an eye on the side it's leaning towards
+            const e = lean >= 0 ? x + 1 : x;
+            dot(e - 1, y, true); dot(e, y, false); dot(e + 1, y, true);
+            dot(x, y - 1, true); dot(x + 1, y - 1, true);
+          } else { dot(x, y, true); dot(x + 1, y, true); }
+        }
+      }
+
+      clear() {
+        this.plants = []; this.drops = []; this.splashes = []; this.butterflies = []; this.worm = null;
+        this.redrawStill(); this.kick();
+      }
+
+      // the flower the falling water hits first: anything drawn in the stream
+      // (from the spout down to the landing spot, a few cells wide) counts
+      hitPlant(at) {
+        const top = at.y - CAN_IDLE.lift, bottom = at.y + 2;
+        let best = null, bestY = Infinity;
+        for (let i = this.plants.length - 1; i >= 0; i--) {   // newest first, as it's drawn on top
+          const p = this.plants[i];
+          let hitY = Infinity;
+          const probe = { set fillStyle(v) {}, fillRect(x, y) {
+            if (Math.abs(x - at.x) <= 2 && y >= top && y <= bottom && y < hitY) hitY = y;
+          } };
+          this.drawPlant(probe, { ...p, size: p.grow ? p.grow.to : p.size }, 1, Infinity);
+          if (hitY < bestY) { bestY = hitY; best = p; }
+        }
+        return best ? { plant: best, y: bestY } : null;
+      }
+
+      water(at, type) {
+        const now = performance.now();
+        this.pointer = at;
+        if (type !== 'mouse') this.touchUntil = now + 900;
+        this.pourUntil = now + 480;
+        for (let i = 0; i < 6; i++) this.drops.push({ x: at.x + Math.round(rand(-1, 1)), y: at.y - 3 - i * 1.6, top: at.y - 3, land: at.y });
+
+        const found = this.hitPlant(at), hit = found && found.plant;
+        if (found) for (const d of this.drops) if (d.land === at.y) d.land = Math.max(d.top + 1, found.y);
+        if (hit) {
+          if (hit.level < MAX_LEVEL) {
+            const start = now + (this.reduced ? -GROW_MORE_MS : GROW_DELAY);
+            const level = hit.level + 1, size = 1 + 0.22 * level;
+            const leaves = level % 2 === 0 ? [...hit.leaves, this.makeLeaf(start, hit.leaves)] : hit.leaves;
+            if (this.fits({ ...hit, size, leaves })) {   // too big for the box? leave it as it is
+              hit.level = level;
+              hit.leaves = leaves;
+              hit.grow = { from: hit.size, to: size, start };
+              if (hit.done) { hit.done = false; this.redrawStill(); }
+            }
+          }
+        } else {
+          // try a few random variations; plant nothing if none fits completely
+          for (let i = 0; i < 8; i++) {
+            const np = this.makePlant(at.x, at.y, now + (this.reduced ? -GROW_MS : GROW_DELAY));
+            if (!this.fits(np)) continue;
+            this.plants.push(np);
+            if (this.plants.length > this.maxFlowers) { this.plants.shift(); this.redrawStill(); }
+            break;
+          }
+        }
+        this.kick();
+      }
+
+      makeLeaf(born, existing = []) {
+        const last = existing[existing.length - 1];
+        return {
+          born,
+          at: last ? Math.min(0.8, last.at + rand(0.12, 0.22)) : rand(0.25, 0.55),
+          side: last ? -last.side : (Math.random() < 0.5 ? -1 : 1),
+          len: rand(10, 17), w: rand(1.8, 2.4), ang: rand(0.55, 0.95),
+        };
+      }
+
+      makePlant(bx, by, start) {
+        const stemH = Math.round(rand(18, 34));
+        const lean = rand(-5, 5);
+        const W = rand(12, 20), H = rand(9, 13);
+        return {
+          bx, by, start, done: false, stemH, lean, size: 1, level: 0, grow: null,
+          bend: rand(-4, 4),
+          head: { W, H, lobes: 2 + Math.floor(rand(0, 3)), phase: rand(0, Math.PI * 2), amp: rand(1.4, 2.8), tilt: rand(-0.45, 0.45) + lean * 0.05 },
+          leaves: Math.random() < 0.8 ? [this.makeLeaf(null)] : [],
+        };
+      }
+
+      stemPoint(p, t) {
+        const x0 = p.bx + 0.5, y0 = p.by + 0.5;
+        const sh = p.stemH * p.size;
+        const x2 = x0 + p.lean * p.size, y2 = y0 - sh, x1 = x0 + p.bend, y1 = y0 - sh * 0.5;
+        const m = 1 - t;
+        return { x: m * m * x0 + 2 * m * t * x1 + t * t * x2, y: m * m * y0 + 2 * m * t * y1 + t * t * y2 };
+      }
+
+      // ---------- plant rasteriser
+      drawPlant(c, p, prog, now) {
+        const ink = this.ink, paper = this.paper;
+        const dot = (x, y, on) => { c.fillStyle = on ? ink : paper; c.fillRect(x, y, 1, 1); };
+        const chk = (x, y) => ((x + y) & 1) === 0;
+
+        // dithered shadow at the base
+        const sh = clamp01(prog * 3);
+        if (sh > 0) {
+          const rx = 6 * sh * Math.min(1.7, p.size);
+          for (let dy = 0; dy <= 1; dy++) for (let dx = -7; dx <= 6; dx++) {
+            const e = ((dx + 0.5) / rx) ** 2 + (dy / 1.6) ** 2;
+            const x = p.bx + dx, y = p.by + dy;
+            if (e < 1 && (chk(x, y) || (Math.abs(dx) < 2 && dy === 0))) dot(x, y, true);
+          }
+        }
+
+        // stem
+        const s = easeOut(clamp01(prog / 0.55));
+        if (s <= 0) return;
+        const n = Math.ceil(p.stemH * p.size * 3);
+        const stem = () => {
+          for (let i = 0; i <= n; i++) {
+            const t = (i / n) * s, q = this.stemPoint(p, t);
+            const x = Math.floor(q.x), y = Math.floor(q.y);
+            dot(x, y, true);
+            if (t < 0.4 || (p.size > 1.6 && t < 0.7)) dot(x + 1, y, true);
+          }
+        };
+        stem();
+
+        // leaves
+        for (const L0 of p.leaves) {
+          if (s <= L0.at) continue;
+          const l = L0.born == null ? easeOut(clamp01((prog - 0.3) / 0.4)) : easeOut(clamp01((now - L0.born) / GROW_MORE_MS));
+          const B = this.stemPoint(p, L0.at);
+          const dir = { x: L0.side * Math.sin(L0.ang), y: -Math.cos(L0.ang) };
+          const L = L0.len * l * Math.sqrt(p.size), w = L0.w * (0.5 + 0.5 * l);
+          if (L > 1) {
+            const f = (x, y) => {
+              const dx = x + 0.5 - B.x, dy = y + 0.5 - B.y;
+              const a = dx * dir.x + dy * dir.y, b = -dx * dir.y + dy * dir.x;
+              if (a < 0 || a > L) return null;
+              const hw = w * Math.pow(Math.sin(Math.PI * a / L), 0.7);
+              return Math.abs(b) <= hw ? { a, b } : null;
+            };
+            const R = Math.ceil(L + 3);
+            for (let y = Math.floor(B.y) - R; y <= B.y + R; y++) for (let x = Math.floor(B.x) - R; x <= B.x + R; x++) {
+              const q = f(x, y); if (!q) continue;
+              const edge = !f(x + 1, y) || !f(x - 1, y) || !f(x, y + 1) || !f(x, y - 1);
+              if (edge || Math.abs(q.b) < 0.5) dot(x, y, true);
+              else dot(x, y, false);
+            }
+          }
+        }
+
+        if (p.leaves.length) stem(); // keep the stem on top of leaf bases
+
+        // flower head
+        const hp = clamp01((prog - 0.5) / 0.5);
+        if (hp <= 0) return;
+        const h = easeBack(hp), hd = p.head;
+        const O = this.stemPoint(p, s);
+        const k = 1 + (p.size - 1) * 0.7;
+        const W = hd.W * k * (0.35 + 0.65 * h), H = hd.H * k * (0.5 + 0.5 * h), amp = hd.amp * k * clamp01(h);
+        const r = W / 2, depth = H * 0.45, cos = Math.cos(hd.tilt), sin = Math.sin(hd.tilt);
+        const top = u => { const s2 = (u + r) / (2 * r); return -H * (1 - 0.22 * (u / r) ** 2) + amp * (0.5 + 0.5 * Math.cos(2 * Math.PI * hd.lobes * s2 + hd.phase)); };
+        const bot = u => -depth * (1 - Math.sqrt(Math.max(0, 1 - (u / r) ** 2))) + 0.6;
+        const local = (x, y) => { const dx = x + 0.5 - O.x, dy = y + 0.5 - O.y; return { u: dx * cos + dy * sin, v: -dx * sin + dy * cos }; };
+        const inside = (x, y) => { const { u, v } = local(x, y); return Math.abs(u) < r && v >= top(u) && v <= bot(u); };
+
+        // petal creases run from the base to each valley in the rim
+        const creases = [];
+        for (let k = -2; k <= hd.lobes + 2; k++) {
+          const s2 = (2 * Math.PI * k - hd.phase) / (2 * Math.PI * hd.lobes);
+          if (s2 > 0.14 && s2 < 0.86) { const u = s2 * 2 * r - r; creases.push({ u, v: top(u) * 0.8 }); }
+        }
+        const segDist = (u, v, cx, cy) => {
+          const ax = 0, ay = -depth * 0.15, bx = cx - ax, by = cy - ay;
+          const t = clamp01(((u - ax) * bx + (v - ay) * by) / (bx * bx + by * by));
+          return Math.hypot(u - ax - bx * t, v - ay - by * t);
+        };
+
+        const R = Math.ceil(Math.max(W, H) + 3);
+        for (let y = Math.floor(O.y) - R; y <= O.y + R; y++) for (let x = Math.floor(O.x) - R; x <= O.x + R; x++) {
+          if (!inside(x, y)) continue;
+          const edge = !inside(x + 1, y) || !inside(x - 1, y) || !inside(x, y + 1) || !inside(x, y - 1);
+          if (edge) { dot(x, y, true); continue; }
+          const { u, v } = local(x, y);
+          const t = (v - top(u)) / (bot(u) - top(u));
+          let on = false;
+          if (bot(u) - v < 1.6) on = true;
+          else if (t > 0.45) on = chk(x, y);
+          else if (h > 0.6 && creases.some(c2 => segDist(u, v, c2.u, c2.v) < 0.55)) on = true;
+          dot(x, y, on);
+        }
+      }
+
+      drawCan(c, now) {
+        const show = this.pointer && (this.matches(':hover') || now < (this.touchUntil || 0));
+        if (!show) return;
+        const spr = now < this.pourUntil ? CAN_POUR : CAN_IDLE;
+        const ox = this.pointer.x - spr.tip.x, oy = this.pointer.y - spr.lift - spr.tip.y;
+        for (const { x, y, c: ch } of spr.cells) {
+          const gx = ox + x, gy = oy + y;
+          const on = ch === '#' || (ch === ':' && ((gx + gy) & 1) === 0);
+          c.fillStyle = on ? this.ink : this.paper;
+          c.fillRect(gx, gy, 1, 1);
+        }
+      }
+
+      kick() { if (!this.raf) this.raf = requestAnimationFrame(t => this.tick(t)); }
+
+      tick(now) {
+        this.raf = 0;
+        const dt = Math.min(50, now - (this.last || now)); this.last = now;
+        const c = this.fctx;
+        c.drawImage(this.still, 0, 0);
+        let busy = false;
+
+        for (const p of this.plants) {
+          if (p.done) continue;
+          const prog = clamp01((now - p.start) / GROW_MS);
+          if (p.grow) {
+            const t = clamp01((now - p.grow.start) / GROW_MORE_MS);
+            p.size = p.grow.from + (p.grow.to - p.grow.from) * (t > 0 ? easeBack(t) : 0);
+            if (t >= 1) { p.size = p.grow.to; p.grow = null; }
+          }
+          const leafing = p.leaves.some(l => l.born != null && now - l.born < GROW_MORE_MS);
+          if (prog >= 1 && !p.grow && !leafing) { p.done = true; this.drawPlant(this.sctx, p, 1, Infinity); this.drawPlant(c, p, 1, Infinity); }
+          else { this.drawPlant(c, p, prog, now); busy = true; }
+        }
+
+        const critters = this.plants.length > BUTTERFLIES_AFTER || this.butterflies.length > 0;
+        if (critters) {
+          this.updateWorm(now);
+          this.updateButterflies(now, dt / 1000);
+          this.drawWorm(c, now);
+          busy = true;
+        }
+
+        c.fillStyle = this.ink;
+        this.drops = this.drops.filter(d => {
+          d.y += dt * 0.045;
+          if (d.y >= d.land) { this.splashes.push({ x: d.x, y: d.land, t: now }); return false; }
+          if (d.y >= d.top) c.fillRect(d.x, Math.floor(d.y), 1, 2);
+          return true;
+        });
+        this.splashes = this.splashes.filter(s => {
+          const a = now - s.t; if (a > 140) return false;
+          const o = a < 70 ? 1 : 2;
+          c.fillRect(s.x - o, s.y - 1, 1, 1); c.fillRect(s.x + o, s.y - 1, 1, 1);
+          return true;
+        });
+        if (this.drops.length || this.splashes.length || now < this.pourUntil || now < (this.touchUntil || 0)) busy = true;
+
+        this.drawButterflies(c, now);
+        this.drawCan(c, now);
+
+        const ctx = this.ctx;
+        ctx.imageSmoothingEnabled = false;
+        ctx.fillStyle = this.paper; ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+        ctx.drawImage(this.frame, 0, 0, this.cols * this.scale, this.rows * this.scale);
+        if (busy && this.visible) this.kick();
+      }
+    }
+    customElements.define('pixel-garden', PixelGarden);
+  })();
+  </script>
+  <!-- ===== EMBED: copy to here ===== -->
+</main>
+</body>
+</html>
