@@ -6,15 +6,21 @@
 <title>Pixel Garden</title>
 <style>
   html, body { margin: 0; height: 100%; background: #E2DAC5; }
+  /* hint and clear button share one row, so they can never overlap */
+  #top-bar {
+    position: fixed; top: 14px; left: 16px; right: 16px; z-index: 1;
+    display: flex; justify-content: space-between; align-items: flex-start; gap: 20px;
+    pointer-events: none;
+  }
   #clear-garden {
-    all: unset; position: fixed; top: 14px; right: 16px; z-index: 1; cursor: pointer;
+    all: unset; flex: none; pointer-events: auto; cursor: pointer; white-space: nowrap;
     font: 400 15px/1.25 ui-monospace, 'SF Mono', Menlo, Consolas, monospace; letter-spacing: .04em; text-transform: uppercase;
     color: #013148; opacity: .45; transition: opacity .15s;
   }
   #clear-garden:hover { opacity: 1; }
   #clear-garden:focus-visible { outline: 1px dashed #013148; outline-offset: 3px; }
   #garden-hint {
-    position: fixed; top: 16px; left: 16px; z-index: 1; margin: 0; pointer-events: none;
+    flex: 1 1 auto; min-width: 0; margin: 2px 0 0;
     font: 400 12px/1.4 ui-monospace, 'SF Mono', Menlo, Consolas, monospace; letter-spacing: .04em; text-transform: uppercase;
     color: #013148; opacity: .7; transition: opacity .6s;
   }
@@ -22,9 +28,11 @@
 </style>
 </head>
 <body>
-<button id="clear-garden" type="button" aria-label="Clear the garden"
-        onclick="document.querySelector('pixel-garden').clear()">clear garden</button>
-<p id="garden-hint">click to start watering</p>
+<div id="top-bar">
+  <p id="garden-hint">click to start watering</p>
+  <button id="clear-garden" type="button" aria-label="Clear the garden"
+          onclick="document.querySelector('pixel-garden').clear()">clear garden</button>
+</div>
 <pixel-garden fill avoid="#clear-garden"></pixel-garden>
 <script>
 /*
