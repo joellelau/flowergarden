@@ -5,7 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Pixel Garden</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #E2DAC5; }
+  :root { --ink: #013148; --paper: #E2DAC5; }
+  body.night { --ink: #E2DAC5; --paper: #013148; }
+  html, body { margin: 0; height: 100%; background: var(--paper); }
   /* hint and clear button share one row, so they can never overlap */
   #top-bar {
     position: fixed; top: 14px; left: 16px; right: 16px; z-index: 1;
@@ -15,14 +17,14 @@
   #clear-garden {
     all: unset; flex: none; pointer-events: auto; cursor: pointer; white-space: nowrap;
     font: 400 15px/1.25 ui-monospace, 'SF Mono', Menlo, Consolas, monospace; letter-spacing: .04em; text-transform: uppercase;
-    color: #013148; opacity: .45; transition: opacity .15s;
+    color: var(--ink); opacity: .45; transition: opacity .15s;
   }
   #clear-garden:hover { opacity: 1; }
-  #clear-garden:focus-visible { outline: 1px dashed #013148; outline-offset: 3px; }
+  #clear-garden:focus-visible { outline: 1px dashed var(--ink); outline-offset: 3px; }
   #garden-hint {
     flex: 1 1 auto; min-width: 0; margin: 2px 0 0;
     font: 400 12px/1.4 ui-monospace, 'SF Mono', Menlo, Consolas, monospace; letter-spacing: .04em; text-transform: uppercase;
-    color: #013148; opacity: .7; transition: opacity .6s;
+    color: var(--ink); opacity: .7; transition: opacity .6s;
   }
   #garden-hint.hidden { opacity: 0; }
 </style>
@@ -53,9 +55,16 @@
  *   water      plant new flowers and grow existing ones
  *   interact   brush flowers to make them sway; touch a butterfly, bunny or worm
  *              and it runs off (the bunny burrows and comes back later)
+ *   scatter    sprinkle seeds; sparrows (up to 2) fly in to eat them, and
+ *              watering seeds that are left grows dandelions, which blow away
+ *              in the wind when you touch them in interact mode
  *   dig        click a flower to dig it up
  *   mode="interact"  start in that mode       no-tools  hide the toolbar
  *   avoid="#a, .b"  page elements (CSS selectors) flowers mustn't grow over
+ *   night        start in night mode (switch in the bottom-right corner): no birds,
+ *                and glow worms instead of butterflies
+ *   night-ink / night-paper   night colours (default: day colours swapped)
+ * Listen for 'nightchange' (event.detail.night) to restyle the rest of your page.
  * Watering an existing flower makes it grow bigger (up to 5 times).
  * Call gardenElement.clear() to clear it from your own code.
  * Set the size with CSS, e.g. style="height: 420px" (width fills its container).
@@ -202,9 +211,89 @@
     '###:#         ',
     '####          ',
   ];
-  const BUTTERFLIES_AFTER = 3, MAX_BUTTERFLIES = 3, WORMS_AFTER = 4, BUNNIES_AFTER = 5, MAX_BUNNIES = 1;
+  const MAX_GLOWS = 5, BUTTERFLIES_AFTER = 3, MAX_BUTTERFLIES = 3, WORMS_AFTER = 4, BUNNIES_AFTER = 5, MAX_BUNNIES = 1;
   const BUNNY_W = 19, BUNNY_H = 15, HOP_MS = 300, HOP_LEN = 6, HOP_ARC = 1.5, BURROW_MS = 900, DIG_MS = 520;
-  const MODES = ['water', 'interact', 'dig'];
+  const MODES = ['water', 'interact', 'scatter', 'dig'];
+  const POUCH = [
+    ' #   # ',
+    '  ###  ',
+    ' #ooo# ',
+    '#ooooo#',
+    '#o:o:o#',
+    '#:o:o:#',
+    ' ##### ',
+  ];
+  // sparrow, facing right; anchor = column 5, bottom row (its feet)
+  const SP_STAND = [
+    '        ###  ',
+    '       ##e## ',
+    '#     #######',
+    '##   ######  ',
+    ' ##########  ',
+    '  #::::::#   ',
+    '   ######    ',
+    '    #  #     ',
+  ];
+  const SP_PECK = [
+    '##           ',
+    ' ###         ',
+    '  ########   ',
+    '   ########  ',
+    '   #::::##e# ',
+    '    #####  ##',
+    '    #  #     ',
+  ];
+  // flight frames (option B): plump body, one wing with a thin gap where it crosses the body.
+  // anchor = column 7, bottom row
+  const SP_FLY_UP = [
+    '                   ',
+    '   ##              ',
+    '    ##             ',
+    '     ##            ',
+    '      ##  ###      ',
+    '      ###o#e##     ',
+    '       ##o######   ',
+    '#      oo#####     ',
+    '##   #########     ',
+    ' ############      ',
+    ' ##::::::::##      ',
+    '  ##::::::##       ',
+    '   ########        ',
+    '                   ',
+  ];
+  const SP_FLY_MID = [
+    '                   ',
+    '                   ',
+    '                   ',
+    '                   ',
+    '          ###      ',
+    '         ##e##     ',
+    '         o######   ',
+    '#  #######o###     ',
+    '##  ######o###     ',
+    ' ###oooooo###      ',
+    ' ##::::::::##      ',
+    '  ##::::::##       ',
+    '   ########        ',
+    '                   ',
+  ];
+  const SP_FLY_DOWN = [
+    '                   ',
+    '                   ',
+    '                   ',
+    '                   ',
+    '          ###      ',
+    '         ##e##     ',
+    '         #######   ',
+    '#      #######     ',
+    '##   #oooo####     ',
+    ' ####o####o##      ',
+    ' ##::o###o:##      ',
+    '  ##o###o:##       ',
+    '   #o##o###        ',
+    '     #             ',
+  ];
+  const MAX_SPARROWS = 2, MAX_SEEDS = 120, SP_BEAK = 5;
 
   class PixelGarden extends HTMLElement {
     connectedCallback() {
@@ -217,25 +306,36 @@
         :host([fill]){height:100%;min-height:200px}
         .tools{position:absolute;bottom:14px;left:14px;display:flex;flex-direction:column;gap:6px;z-index:1;margin:0;padding:0;list-style:none}
         :host([no-tools]) .tools{display:none}
-        button{all:unset;cursor:pointer;display:block;white-space:pre;
-          font:400 15px/1.25 ui-monospace,'SF Mono',Menlo,Consolas,monospace;letter-spacing:.04em;text-transform:uppercase;
-          color:var(--ink);opacity:.45;transition:opacity .15s}
-        button::before{content:'  '}
-        button[aria-pressed="true"]{opacity:1}
-        button[aria-pressed="true"]::before{content:'> '}
-        button:hover{opacity:.8}
-        button[aria-pressed="true"]:hover{opacity:1}
+        button{all:unset;cursor:pointer;font:400 15px/1.25 ui-monospace,'SF Mono',Menlo,Consolas,monospace;letter-spacing:.04em;
+          text-transform:uppercase;color:var(--ink)}
         button:focus-visible{outline:1px dashed var(--ink);outline-offset:3px}
+        .tools button{display:block;white-space:pre;opacity:.45;transition:opacity .15s}
+        .tools button::before{content:'  '}
+        .tools button[aria-pressed="true"]{opacity:1}
+        .tools button[aria-pressed="true"]::before{content:'> '}
+        .tools button:hover{opacity:.8}
+        .tools button[aria-pressed="true"]:hover{opacity:1}
+        .night{position:absolute;right:0;bottom:0;padding:16px 16px 16px 28px;z-index:1;display:flex;align-items:center;gap:10px}
+        :host([no-night]) .night{display:none}
+        .night .lbl{opacity:.45;transition:opacity .15s;min-width:5ch;text-align:right}
+        .night:hover .lbl,.night[aria-checked="true"] .lbl{opacity:1}
+        .track{position:relative;width:26px;height:12px;border:2px solid var(--ink)}
+        .knob{position:absolute;top:2px;left:2px;width:8px;height:8px;background:var(--ink);transition:left .15s}
+        .night[aria-checked="true"] .knob{left:16px}
       </style><canvas></canvas>
+      <button type="button" class="night" role="switch" aria-checked="false"><span class="lbl">day</span><span class="track"><span class="knob"></span></span></button>
       <div class="tools" role="toolbar" aria-label="Garden tools" aria-orientation="vertical">
         <button type="button" data-mode="interact">interact</button>
         <button type="button" data-mode="water">water</button>
+        <button type="button" data-mode="scatter">scatter</button>
         <button type="button" data-mode="dig">dig</button>
       </div>`;
       this.canvas = root.querySelector('canvas');
       this.ctx = this.canvas.getContext('2d');
-      this.ink = this.getAttribute('ink') || '#013148';
-      this.paper = this.getAttribute('paper') || '#E2DAC5';
+      this.day = { ink: this.getAttribute('ink') || '#013148', paper: this.getAttribute('paper') || '#E2DAC5' };
+      this.nightPal = { ink: this.getAttribute('night-ink') || this.day.paper, paper: this.getAttribute('night-paper') || this.day.ink };
+      this.ink = this.day.ink;
+      this.paper = this.day.paper;
       this.px = +this.getAttribute('pixel-size') || 4;
       this.maxFlowers = +this.getAttribute('max-flowers') || 60;
       // inside an embed iframe, let the page itself fill the frame
@@ -255,6 +355,12 @@
       this.bunnies = [];
       this.nextBunny = 0;
       this.particles = [];
+      this.seeds = [];
+      this.sparrows = [];
+      this.fluff = [];
+      this.glows = [];
+      this.nextGlow = 0;
+      this.nextSparrow = 0;
       this.gridDirty = true;
       this.digUntil = 0;
       this.worm = null;
@@ -273,6 +379,12 @@
       this.toolButtons = [...tools.querySelectorAll('button')];
       tools.addEventListener('pointerdown', e => e.stopPropagation());
       tools.addEventListener('pointerenter', () => { this.overTools = true; this.kick(); });
+      const sw = root.querySelector('.night');
+      this.nightSwitch = sw;
+      sw.addEventListener('pointerdown', e => e.stopPropagation());
+      sw.addEventListener('pointerenter', () => { this.overSwitch = true; this.kick(); });
+      sw.addEventListener('pointerleave', () => { this.overSwitch = false; this.kick(); });
+      sw.addEventListener('click', () => { this.night = !this.night; });
       tools.addEventListener('pointerleave', () => { this.overTools = false; this.kick(); });
       this.toolButtons.forEach(b => b.addEventListener('click', () => { this.mode = b.dataset.mode; }));
       tools.addEventListener('keydown', e => {
@@ -291,16 +403,39 @@
         this.kick();
       });
       this.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') { this.pointer = null; this.kick(); } });
+      this.night = this.hasAttribute('night');
       this.addEventListener('pointerdown', e => {
         const at = this.cell(e), now = performance.now();
         this.pointer = at;
         if (e.pointerType !== 'mouse') this.touchUntil = now + 900;
         if (this._mode === 'water') this.water(at, e.pointerType);
         else if (this._mode === 'interact') this.touch(at, null, true);
+        else if (this._mode === 'scatter') this.scatter(at);
         else this.dig(at);
         this.kick();
       });
       this.resize();
+    }
+
+    get night() { return !!this._night; }
+    set night(on) {
+      on = !!on;
+      if (on === !!this._night && this._nightInit) return;
+      this._night = on; this._nightInit = true;
+      const pal = on ? this.nightPal : this.day;
+      this.ink = pal.ink; this.paper = pal.paper;
+      this.style.setProperty('--ink', this.ink);
+      this.style.setProperty('--paper', this.paper);
+      if (this.nightSwitch) {
+        this.nightSwitch.setAttribute('aria-checked', String(on));
+        this.nightSwitch.setAttribute('aria-label', on ? 'Night mode on' : 'Night mode off');
+        this.nightSwitch.querySelector('.lbl').textContent = on ? 'night' : 'day';
+      }
+      this.toggleAttribute('night', on);
+      if (on) { const now = performance.now(); for (const b of this.sparrows || []) if (b.state !== 'leave') this.sparrowLeave(b, now); }
+      if (this.sctx) this.redrawStill();
+      this.dispatchEvent(new CustomEvent('nightchange', { detail: { night: on }, bubbles: true }));
+      this.kick();
     }
 
     get mode() { return this._mode; }
@@ -334,7 +469,7 @@
 
     redrawStill() {
       const c = this.sctx;
-      c.fillStyle = this.paper; c.fillRect(0, 0, this.cols, this.rows);
+      c.clearRect(0, 0, this.cols, this.rows);   // flowers only; the background is painted per frame
       for (const p of this.plants) if (p.done) this.drawPlant(c, p, 1, Infinity);
     }
 
@@ -411,12 +546,19 @@
         const id = g[y * this.cols + x];
         if (id) seen.add(this.plants[id - 1]);
       }
-      for (const p of seen) this.swayPlant(p, dir, tap ? 3.2 : 1.4 + speed * 0.5, now);
+      for (const p of seen) {
+        this.swayPlant(p, dir, tap ? 3.2 : 1.4 + speed * 0.5, now);
+        if (p.kind === 'dandelion') this.blow(p, dir, now);
+      }
+      for (const b of this.sparrows)
+        if (b.state !== 'leave' && Math.abs(at.x - b.x) <= 6 && at.y >= b.y - 9 && at.y <= b.y + 2) this.sparrowLeave(b, now, at);
 
       for (const b of this.bunnies)
         if (b.state !== 'burrow' && Math.abs(at.x - b.x) <= BUNNY_W / 2 + 1 && at.y >= b.y - BUNNY_H && at.y <= b.y + 1) this.burrow(b, now);
       for (const b of this.butterflies)
         if (!b.flee && Math.hypot(b.x - at.x, b.y - at.y) < (tap ? 8 : 6)) this.flee(b, at, now);
+      for (const gw of this.glows)
+        if (!gw.leaving && Math.hypot(gw.x - at.x, gw.y - at.y) < (tap ? 7 : 5)) this.glowLeave(gw, now, at);
       const w = this.worm;
       if (w && !w.retracting && Math.abs(at.x - (w.x + 1)) <= 3 && at.y >= w.y - 10 && at.y <= w.y + 1) {
         const t = now - w.start, frac = clamp01(Math.min(t / 500, (w.dur - t) / 500));
@@ -450,6 +592,7 @@
         for (const b of this.butterflies) if (b.perch === p) this.flee(b, { x: b.x, y: b.y + 6 }, now);
         this.burst(p.bx, p.by, 12, 1);
       } else this.burst(at.x, at.y, 5, 0.6);
+      this.seeds = this.seeds.filter(sd => Math.hypot(sd.x - at.x, sd.y - at.y) > 4);
     }
 
     // is a butterfly centred at (x, y) clear of the menu and avoid="" areas?
@@ -459,7 +602,7 @@
 
     pickTarget(b) {
       const out = this.keepOut(1);
-      const perches = this.plants.filter(p => p.done && !p.dig && p !== b.perch && !this.butterflies.some(o => o.perch === p)
+      const perches = this.plants.filter(p => p.done && !p.dig && p.kind !== 'dandelion' && p !== b.perch && !this.butterflies.some(o => o.perch === p)
                                           && (q => this.airFree(q.x, q.y, out))(this.perchPoint(p)));
       if (perches.length && Math.random() < 0.5) {
         b.perch = perches[Math.floor(Math.random() * perches.length)];
@@ -480,8 +623,89 @@
       return b;
     }
 
+    // ---------- glow worms (night only): drifting points of light that pulse
+    glowTarget(gw) {
+      const homes = this.plants.filter(p => !p.dig);
+      const out = this.keepOut(1);
+      for (let i = 0; i < 12; i++) {
+        let x, y;
+        if (homes.length && Math.random() < 0.85) {
+          const p = homes[Math.floor(Math.random() * homes.length)];
+          const q = this.stemPoint(p, rand(0.15, 0.9));
+          x = q.x + rand(-9, 9); y = q.y + rand(-4, 4);
+        } else { x = rand(6, this.cols - 6); y = rand(this.rows * 0.35, this.rows - 6); }
+        if (x < 3 || x > this.cols - 3 || y < 3 || y > this.rows - 3) continue;
+        if (out.some(r => x >= r.x0 - 3 && x <= r.x1 + 3 && y >= r.y0 - 3 && y <= r.y1 + 3)) continue;
+        gw.tx = x; gw.ty = y; return;
+      }
+      gw.tx = gw.x; gw.ty = gw.y;
+    }
+
+    makeGlow(now) {
+      const gw = { x: 0, y: 0, vx: 0, vy: 0, born: now, phase: rand(0, 6.28), rate: rand(1.6, 2.6), rest: 0, leaving: false };
+      this.glowTarget(gw); gw.x = gw.tx; gw.y = gw.ty; this.glowTarget(gw);   // appears near a flower, then wanders
+      return gw;
+    }
+
+    glowLeave(gw, now, from) {
+      if (gw.leaving) return;
+      gw.leaving = true; gw.leftAt = now;
+      const dx = from ? Math.sign(gw.x - from.x) || 1 : (Math.random() < 0.5 ? -1 : 1);
+      gw.vx = dx * rand(5, 9); gw.vy = -rand(3, 6);
+      this.nextGlow = Math.max(this.nextGlow, now + rand(2500, 5000));
+    }
+
+    updateGlows(now, dt) {
+      const want = this._night && this.plants.length > BUTTERFLIES_AFTER ? Math.min(MAX_GLOWS, this.plants.length - BUTTERFLIES_AFTER + 1) : 0;
+      const active = this.glows.filter(g => !g.leaving);
+      if (active.length < want && now >= this.nextGlow) { this.glows.push(this.makeGlow(now)); this.nextGlow = now + rand(700, 1600); }
+      active.slice(want).forEach(g => this.glowLeave(g, now));
+      for (const gw of this.glows) {
+        if (gw.leaving) {
+          gw.x += gw.vx * dt; gw.y += gw.vy * dt;
+          if (now - gw.leftAt > 1400) gw.gone = true;
+          continue;
+        }
+        if (now < gw.rest) continue;                       // sitting still, glowing
+        const dx = gw.tx - gw.x, dy = gw.ty - gw.y, d = Math.hypot(dx, dy) || 1;
+        const sp = Math.min(5, 1 + d * 0.6), k = Math.min(1, dt * 1.5);
+        gw.vx += (dx / d * sp - gw.vx) * k; gw.vy += (dy / d * sp - gw.vy) * k;
+        gw.x += gw.vx * dt; gw.y += (gw.vy + Math.sin(now / 420 + gw.phase) * 1.2) * dt;
+        if (d < 1) {
+          if (Math.random() < 0.4) gw.rest = now + rand(1500, 4000);
+          this.glowTarget(gw);
+        }
+      }
+      this.glows = this.glows.filter(g => !g.gone);
+    }
+
+    drawGlows(c, now) {
+      const ink = this.ink;
+      const dot = (x, y) => { c.fillStyle = ink; c.fillRect(x, y, 1, 1); };
+      for (const gw of this.glows) {
+        // fade in when they arrive, out when they leave
+        let a = clamp01((now - gw.born) / 900);
+        if (gw.leaving) a *= 1 - clamp01((now - gw.leftAt) / 1400);
+        // a slow pulse, with the odd quick blink off
+        const t = now / 1000 * gw.rate + gw.phase;
+        let b = (0.55 + 0.45 * Math.sin(t)) * a;
+        if (Math.sin(t * 0.37 + gw.phase * 3) > 0.97) b *= 0.2;
+        const x = Math.round(gw.x), y = Math.round(gw.y);
+        // the glow around it, at 20% opacity, swelling as it brightens
+        if (b > 0.35) {
+          const R = 1.2 + 1.6 * clamp01((b - 0.35) / 0.55);
+          c.globalAlpha = 0.2;
+          for (let yy = -3; yy <= 3; yy++) for (let xx = -3; xx <= 3; xx++)
+            if ((xx || yy) && Math.hypot(xx, yy) <= R && !(Math.abs(xx) + Math.abs(yy) === 1 && b > 0.55)) dot(x + xx, y + yy);
+          c.globalAlpha = 1;
+        }
+        if (b > 0.12) dot(x, y);
+        if (b > 0.55) { dot(x + 1, y); dot(x - 1, y); dot(x, y + 1); dot(x, y - 1); }
+      }
+    }
+
     updateButterflies(now, dt) {
-      const want = this.plants.length > BUTTERFLIES_AFTER ? Math.min(MAX_BUTTERFLIES, this.plants.length - BUTTERFLIES_AFTER) : 0;
+      const want = this._night ? 0 : this.plants.length > BUTTERFLIES_AFTER ? Math.min(MAX_BUTTERFLIES, this.plants.length - BUTTERFLIES_AFTER) : 0;
       const active = this.butterflies.filter(b => !b.leaving);
       if (active.length < want && now >= this.nextButterfly) { this.butterflies.push(this.makeButterfly()); this.nextButterfly = now + 1800; }
       active.slice(want).forEach(b => { b.leaving = true; b.state = 'fly'; b.perch = null; });
@@ -544,7 +768,7 @@
     // elements named by the avoid attribute (e.g. a clear button)
     keepOut(pad = 1) {
       const h = this.getBoundingClientRect(), k = this.scale / (window.devicePixelRatio || 1);
-      const els = [this.shadowRoot.querySelector('.tools')];
+      const els = [this.shadowRoot.querySelector('.tools'), this.shadowRoot.querySelector('.night')];
       const sel = this.getAttribute('avoid');
       if (sel) try { els.push(...document.querySelectorAll(sel)); } catch (e) {}
       const rects = [];
@@ -733,8 +957,257 @@
       }
     }
 
+    // ---------- scatter mode: seeds
+    scatter(at) {
+      const now = performance.now(), out = this.keepOut(1);
+      this.scatterUntil = now + 250;
+      const n = 6 + Math.floor(Math.random() * 4);
+      for (let i = 0; i < n; i++) {
+        const x = Math.round(at.x + rand(-7, 7)), y = Math.round(at.y + rand(-2, 2));
+        if (x < 1 || x >= this.cols - 2 || y < 2 || y >= this.rows - 1) continue;
+        if (out.some(r => x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1)) continue;
+        this.seeds.push({ x, y, from: at.y - 2, t0: now + i * 35, tilt: Math.random() < 0.5 });
+      }
+      if (this.seeds.length > MAX_SEEDS) this.seeds.splice(0, this.seeds.length - MAX_SEEDS);
+      if (!this.sparrows.length) this.nextSparrow = Math.max(this.nextSparrow, now + rand(1800, 3200));
+      this.kick();
+    }
+
+    landed(sd, now) { return now - sd.t0 > 260; }
+
+    drawSeeds(c, now) {
+      c.fillStyle = this.ink;
+      for (const sd of this.seeds) {
+        const t = clamp01((now - sd.t0) / 260);
+        if (now < sd.t0) continue;
+        const y = Math.round(sd.from + (sd.y - sd.from) * t * t);
+        c.fillRect(sd.x, y, 1, 1);
+        if (t >= 1) c.fillRect(sd.x + 1, y - (sd.tilt ? 1 : 0), 1, 1);
+      }
+    }
+
+    // water that lands on seeds grows a dandelion there
+    // cells covered by the watering can when the pointer is at `at`
+    canCells(at) {
+      const set = new Set(), ox = at.x - CAN_IDLE.tip.x, oy = at.y - CAN_IDLE.lift - CAN_IDLE.tip.y;
+      for (const { x, y } of CAN_IDLE.cells) set.add((ox + x) + ',' + (oy + y));
+      return set;
+    }
+
+    // seeds touched by any part of the can, or under the falling water, sprout a dandelion
+    waterSeeds(at, now) {
+      const can = this.canCells(at);
+      const touches = sd => {
+        for (let dx = -1; dx <= 2; dx++) for (let dy = -1; dy <= 1; dy++) if (can.has((sd.x + dx) + ',' + (sd.y + dy))) return true;
+        return false;
+      };
+      const near = this.seeds.filter(sd => touches(sd) || (Math.abs(sd.x - at.x) <= 5 && Math.abs(sd.y - at.y) <= 3));
+      if (!near.length) return false;
+      near.sort((a, b) => Math.hypot(a.x - at.x, a.y - at.y) - Math.hypot(b.x - at.x, b.y - at.y));
+      const sd = near[0];
+      // pour onto the seeds rather than wherever the pointer is
+      for (const d of this.drops) if (d.land === at.y) { d.x += sd.x - at.x; d.land = sd.y; d.top = Math.min(d.top, sd.y - 1); d.y = Math.min(d.y, sd.y - 3); }
+      for (let i = 0; i < 8; i++) {
+        const np = this.makeDandelion(sd.x, sd.y, now + (this.reduced ? -GROW_MS : GROW_DELAY));
+        if (!this.fits(np)) continue;
+        this.plants.push(np);
+        this.gridDirty = true;
+        this.seeds = this.seeds.filter(o => Math.hypot(o.x - sd.x, o.y - sd.y) > 3);
+        for (const bn of this.bunnies) if (bn.state !== 'burrow' && !this.bunnyFree(bn.state === 'hop' ? bn.hx1 : bn.x, bn.y, 1)) this.burrow(bn, now, true);
+        if (this.plants.length > this.maxFlowers) { this.plants.shift(); this.redrawStill(); }
+        return true;
+      }
+      return true;   // watered the seeds, but there's no room for a dandelion here
+    }
+
+    makeDandelion(bx, by, start) {
+      const k = FLOWER_SCALE, n = 14 + Math.floor(Math.random() * 5);
+      const R = rand(5.5, 7) * k + 1;
+      const order = [...Array(n).keys()].sort(() => Math.random() - 0.5);
+      return {
+        kind: 'dandelion', bx, by, start, done: false,
+        stemH: Math.round(rand(20, 30) * k), lean: rand(-3, 3) * k, bend: rand(-2, 2) * k,
+        size: 1, level: MAX_LEVEL, grow: null, leaves: [],
+        head: { W: R * 2, H: R * 2, tilt: 0 },
+        puff: { R, n, rot: rand(0, Math.PI), rank: order }, puffGone: 0,
+        rosette: [-1, 1].map(side => ({ side, len: rand(6, 9) * k + 1, ang: rand(1.05, 1.35) })),
+      };
+    }
+
+    drawDandelion(c, p, prog, now) {
+      const ink = this.ink, paper = this.paper;
+      const dot = (x, y, on = true) => { c.fillStyle = on ? ink : paper; c.fillRect(Math.floor(x), Math.floor(y), 1, 1); };
+      const chk = (x, y) => ((x + y) & 1) === 0;
+      // shadow
+      const sh = clamp01(prog * 3);
+      for (let dx = -4; dx <= 4; dx++) if (Math.abs(dx) < 4 * sh && (chk(p.bx + dx, p.by) || Math.abs(dx) < 1)) dot(p.bx + dx, p.by);
+      // low, toothed leaves at the base
+      const l = easeOut(clamp01(prog / 0.4));
+      for (const L of p.rosette) {
+        const n = Math.round(L.len * l);
+        const dx = L.side * Math.sin(L.ang), dy = -Math.cos(L.ang);
+        for (let i = 1; i <= n; i++) {
+          const x = p.bx + 0.5 + dx * i, y = p.by + 0.5 + dy * i;
+          dot(x, y);
+          if (i % 2 === 0 && i < n) dot(x, y - 1);                    // teeth along the top edge
+          if (i < n - 1) dot(x, y + 0.5 * (i % 2));
+        }
+      }
+      // thin stem
+      const s = easeOut(clamp01((prog - 0.1) / 0.5));
+      if (s <= 0) return;
+      const n = Math.ceil(p.stemH * 3);
+      for (let i = 0; i <= n; i++) { const q = this.stemPoint(p, (i / n) * s); dot(q.x, q.y); }
+      // seed head: spokes with a dotted ring of seeds, or a bare knob once blown
+      const hp = clamp01((prog - 0.55) / 0.45);
+      if (hp <= 0) return;
+      const O = this.stemPoint(p, s), pf = p.puff, R = pf.R * (hp < 1 ? easeBack(hp) : 1);
+      const cx = O.x, cy = O.y - R * 0.9;
+      for (let i = 0; i < pf.n; i++) {
+        if (pf.rank[i] < p.puffGone) continue;
+        const a = pf.rot + (i / pf.n) * Math.PI * 2, ca = Math.cos(a), sa = Math.sin(a);
+        // each seed: a tuft on the rim, with a hint of its stalk on every other one
+        dot(cx + ca * R, cy + sa * R);
+        if (i % 2 === 0 && R > 4) dot(cx + ca * R * 0.55, cy + sa * R * 0.55);
+      }
+      dot(cx - 0.5, cy - 0.5); dot(cx + 0.5, cy - 0.5); dot(cx - 0.5, cy + 0.5); dot(cx + 0.5, cy + 0.5);
+    }
+
+    // the wind takes the seeds, then the dandelion dies back
+    blow(p, dir, now) {
+      if (p.blown || p.dig || now - p.start < GROW_MS) return;
+      p.blown = { start: now, dir };
+      this.unbake(p);
+    }
+
+    updateBlown(p, now) {
+      const b = p.blown, pf = p.puff;
+      const want = Math.floor(pf.n * clamp01((now - b.start) / 650));
+      if (want > p.puffGone) {
+        const O = this.stemPoint(p, 1), cy = O.y - pf.R * 0.9;
+        for (let i = 0; i < pf.n; i++) {
+          if (pf.rank[i] < p.puffGone || pf.rank[i] >= want) continue;
+          const a = pf.rot + (i / pf.n) * Math.PI * 2;
+          this.fluff.push({ x: O.x + Math.cos(a) * pf.R, y: cy + Math.sin(a) * pf.R, vx: b.dir * rand(9, 18), vy: rand(-7, -2),
+                            born: now, phase: rand(0, 6.28) });
+        }
+        p.puffGone = want;
+      }
+      if (now - b.start > 1500 && !p.dig) p.dig = { start: now, ms: 1100, quiet: true };
+    }
+
+    drawFluff(c, now, dt) {
+      c.fillStyle = this.ink;
+      this.fluff = this.fluff.filter(f => {
+        f.vx += 4 * Math.sign(f.vx) * dt; f.vy += Math.sin((now - f.born) / 300 + f.phase) * 6 * dt;
+        f.x += f.vx * dt; f.y += f.vy * dt;
+        if (f.x < -4 || f.x > this.cols + 4 || f.y < -4 || now - f.born > 9000) return false;
+        const x = Math.round(f.x), y = Math.round(f.y);
+        c.fillRect(x, y, 1, 1); c.fillRect(x - 1, y - 1, 1, 1); c.fillRect(x + 1, y - 1, 1, 1);   // a seed under its little parachute
+        return true;
+      });
+    }
+
+    // ---------- sparrows
+    seedFor(b, now, range) {
+      let best = null, bd = Infinity;
+      for (const sd of this.seeds) {
+        if (!this.landed(sd, now) || (sd.claim && sd.claim !== b)) continue;
+        const dx = Math.abs(sd.x - b.x), dy = Math.abs(sd.y - b.y);
+        if (range && (dx > range || dy > 8)) continue;
+        const d = dx + dy * 2;
+        if (d < bd) { bd = d; best = sd; }
+      }
+      return best;
+    }
+
+    flyTo(b, sd, now) {
+      const face = sd.x >= b.x ? 1 : -1;
+      b.face = face; b.state = 'fly'; b.claim = sd; sd.claim = b;
+      b.fx0 = b.x; b.fy0 = b.y; b.fx1 = sd.x - SP_BEAK * face; b.fy1 = sd.y;
+      b.fStart = now; b.fMs = Math.max(600, Math.hypot(b.fx1 - b.fx0, b.fy1 - b.fy0) / 45 * 1000);
+    }
+
+    sparrowLeave(b, now, from) {
+      if (b.claim) { b.claim.claim = null; b.claim = null; }
+      const dir = from ? (b.x >= from.x ? 1 : -1) : (b.x < this.cols / 2 ? -1 : 1);
+      b.state = 'leave'; b.face = dir; b.vx = dir * rand(30, 40); b.vy = -rand(14, 22);
+      this.nextSparrow = Math.max(this.nextSparrow, now + rand(3000, 6000));
+    }
+
+    updateSparrows(now, dt) {
+      const avail = this.seeds.filter(sd => this.landed(sd, now)).length;
+      const want = avail ? Math.min(MAX_SPARROWS, avail >= 5 ? 2 : 1) : 0;
+      const active = this.sparrows.filter(b => b.state !== 'leave').length;
+      if (active < want && now >= this.nextSparrow && !this._night) {
+        const left = Math.random() < 0.5;
+        const b = { x: left ? -10 : this.cols + 10, y: 0, face: left ? 1 : -1, state: 'fly' };
+        const sd = this.seedFor(b, now, 0);
+        if (sd) { b.y = Math.max(6, sd.y - rand(25, 45)); this.flyTo(b, sd, now); this.sparrows.push(b); }
+        this.nextSparrow = now + rand(2000, 4000);
+      }
+      for (const b of this.sparrows) {
+        if (b.state === 'leave') {
+          b.vy -= 8 * dt; b.x += b.vx * dt; b.y += b.vy * dt;
+          if (b.x < -14 || b.x > this.cols + 14 || b.y < -12) b.gone = true;
+          continue;
+        }
+        if (b.state === 'fly') {
+          const t = clamp01((now - b.fStart) / b.fMs), e = t < 0.5 ? 2 * t * t : 1 - 2 * (1 - t) * (1 - t);
+          b.x = b.fx0 + (b.fx1 - b.fx0) * e;
+          b.y = b.fy0 + (b.fy1 - b.fy0) * e - Math.sin(Math.PI * t) * 6;
+          if (t >= 1) { b.state = 'ground'; b.until = now + rand(150, 400); }
+          continue;
+        }
+        if (b.state === 'hop') {
+          const t = clamp01((now - b.hStart) / 160);
+          b.x = b.hx0 + (b.hx1 - b.hx0) * t; b.y = b.hy0 + (b.hy1 - b.hy0) * t - Math.sin(Math.PI * t) * 1.5;
+          if (t >= 1) { b.x = b.hx1; b.y = b.hy1; b.state = 'ground'; b.until = now + rand(60, 220); }
+          continue;
+        }
+        if (now < b.until) continue;
+        if (b.state === 'peck') {
+          if (b.claim && this.seeds.includes(b.claim)) this.seeds.splice(this.seeds.indexOf(b.claim), 1);
+          b.claim = null; b.state = 'ground'; b.until = now + rand(250, 800);
+          continue;
+        }
+        // on the ground: go for the nearest seed, or fly off when they're gone
+        let sd = b.claim && this.seeds.includes(b.claim) ? b.claim : this.seedFor(b, now, 32);
+        if (!sd) {
+          const far = this.seedFor(b, now, 0);
+          if (far && Math.random() < 0.7) this.flyTo(b, far, now); else this.sparrowLeave(b, now);
+          continue;
+        }
+        b.claim = sd; sd.claim = b;
+        const face = Math.abs(sd.x - b.x) < 2 ? b.face : (sd.x >= b.x ? 1 : -1);
+        const sx = sd.x - SP_BEAK * face, dx = sx - b.x, dy = sd.y - b.y;
+        if (Math.abs(dx) <= 1 && Math.abs(dy) <= 1) {
+          b.face = face; b.x = sx; b.y = sd.y; b.state = 'peck'; b.until = now + 280;
+        } else {
+          const step = Math.min(1, 3 / Math.hypot(dx, dy));
+          b.face = face; b.state = 'hop'; b.hStart = now;
+          b.hx0 = b.x; b.hy0 = b.y; b.hx1 = b.x + dx * step; b.hy1 = b.y + dy * step;
+        }
+      }
+      this.sparrows = this.sparrows.filter(b => !b.gone);
+    }
+
+    drawSparrows(c, now) {
+      for (const b of this.sparrows) {
+        let rows;
+        if (b.state === 'fly' || b.state === 'leave') rows = [SP_FLY_UP, SP_FLY_MID, SP_FLY_DOWN, SP_FLY_MID][Math.floor(now / 75) % 4];
+        else if (b.state === 'peck') rows = (now - (b.until - 280)) < 200 ? SP_PECK : SP_STAND;
+        else rows = SP_STAND;
+        const w = Math.max(...rows.map(r => r.length));
+        const ax = rows === SP_STAND || rows === SP_PECK ? 5 : 7;   // keep the head in place between frames
+        const ox = b.face > 0 ? Math.round(b.x) - ax : Math.round(b.x) - (w - 1 - ax);
+        this.drawRows(c, rows, ox, Math.round(b.y) - rows.length + 1, b.face < 0, w);
+      }
+    }
+
     clear() {
       this.plants = []; this.drops = []; this.splashes = []; this.butterflies = []; this.worm = null; this.bunnies = []; this.particles = [];
+      this.seeds = []; this.sparrows = []; this.fluff = []; this.glows = [];
       this.gridDirty = true;
       this.redrawStill(); this.kick();
     }
@@ -763,6 +1236,8 @@
       if (type !== 'mouse') this.touchUntil = now + 900;
       this.pourUntil = now + 480;
       for (let i = 0; i < 6; i++) this.drops.push({ x: at.x + Math.round(rand(-1, 1)), y: at.y - 3 - i * 1.6, top: at.y - 3, land: at.y });
+
+      if (this.waterSeeds(at, now)) { this.kick(); return; }   // the can is over seeds: water those
 
       const found = this.hitPlant(at), hit = found && found.plant;
       if (found) for (const d of this.drops) if (d.land === at.y) d.land = Math.max(d.top + 1, found.y);
@@ -829,6 +1304,7 @@
 
     // ---------- plant rasteriser
     drawPlant(c, p, prog, now) {
+      if (p.kind === 'dandelion') return this.drawDandelion(c, p, prog, now);
       const ink = this.ink, paper = this.paper;
       const dot = (x, y, on) => { c.fillStyle = on ? ink : paper; c.fillRect(x, y, 1, 1); };
       const chk = (x, y) => ((x + y) & 1) === 0;
@@ -927,10 +1403,11 @@
     }
 
     drawCursor(c, now) {
-      const show = this.pointer && !this.overTools && (this.matches(':hover') || now < (this.touchUntil || 0));
+      const show = this.pointer && !this.overTools && !this.overSwitch && (this.matches(':hover') || now < (this.touchUntil || 0));
       if (!show) return;
       const { x: px, y: py } = this.pointer;
       if (this._mode === 'interact') { this.drawRows(c, HAND, px - 1, py); return; }
+      if (this._mode === 'scatter') { this.drawRows(c, POUCH, px - 3, py - 8 + (now < (this.scatterUntil || 0) ? 1 : 0)); return; }
       if (this._mode === 'dig') { this.drawRows(c, TROWEL, px, py - 12 + (now < this.digUntil ? 2 : 0)); return; }
       const spr = now < this.pourUntil ? CAN_POUR : CAN_IDLE;
       const ox = px - spr.tip.x, oy = py - spr.lift - spr.tip.y;
@@ -948,14 +1425,34 @@
       this.raf = 0;
       const dt = Math.min(50, now - (this.last || now)); this.last = now;
       const c = this.fctx;
-      c.drawImage(this.still, 0, 0);
+      c.fillStyle = this.paper; c.fillRect(0, 0, this.cols, this.rows);
       let busy = false;
 
+      // 1. critters, in the background
+      const critters = this.plants.length > BUTTERFLIES_AFTER || this.butterflies.length > 0 || this.bunnies.length > 0 || this.glows.length > 0;
+      if (critters) {
+        this.updateWorm(now);
+        this.updateButterflies(now, dt / 1000);
+        this.updateGlows(now, dt / 1000);
+        this.updateBunnies(now);
+        this.drawWorm(c, now);
+        this.drawBunnies(c, now);
+        busy = true;
+      }
+      this.drawSeeds(c, now);
+      if (this.seeds.length || this.sparrows.length) { this.updateSparrows(now, dt / 1000); busy = true; }
+      this.drawSparrows(c, now);
+
+      this.drawButterflies(c, now);
+      this.drawGlows(c, now);
+
+      // 2. flowers on top, so blooms and leaves are always in front of critters
+      c.drawImage(this.still, 0, 0);
       const dug = [];
       for (const p of this.plants) {
         if (p.done) continue;
         if (p.dig) {
-          const t = (now - p.dig.start) / DIG_MS;
+          const t = (now - p.dig.start) / (p.dig.ms || DIG_MS);
           if (t >= 1) dug.push(p);
           else { this.drawPlant(c, p, 1 - t * t, Infinity); busy = true; }
           continue;
@@ -965,6 +1462,7 @@
           if (t > 2.2) { p.sway = null; p.swayOff = 0; }
           else p.swayOff = p.sway.amp * Math.sin(t * 2 * Math.PI / 0.8) * Math.exp(-t / 0.55);
         }
+        if (p.blown) this.updateBlown(p, now);
         const prog = clamp01((now - p.start) / GROW_MS);
         if (p.grow) {
           const t = clamp01((now - p.grow.start) / GROW_MORE_MS);
@@ -972,22 +1470,13 @@
           if (t >= 1) { p.size = p.grow.to; p.grow = null; }
         }
         const leafing = p.leaves.some(l => l.born != null && now - l.born < GROW_MORE_MS);
-        if (prog >= 1 && !p.grow && !leafing && !p.sway) { p.done = true; this.drawPlant(this.sctx, p, 1, Infinity); this.drawPlant(c, p, 1, Infinity); }
+        if (prog >= 1 && !p.grow && !leafing && !p.sway && !p.blown) { p.done = true; this.drawPlant(this.sctx, p, 1, Infinity); this.drawPlant(c, p, 1, Infinity); }
         else { this.drawPlant(c, p, prog, now); busy = true; }
       }
 
       if (dug.length) { this.plants = this.plants.filter(p => !dug.includes(p)); this.gridDirty = true; }
 
-      const critters = this.plants.length > BUTTERFLIES_AFTER || this.butterflies.length > 0 || this.bunnies.length > 0;
-      if (critters) {
-        this.updateWorm(now);
-        this.updateButterflies(now, dt / 1000);
-        this.updateBunnies(now);
-        this.drawWorm(c, now);
-        this.drawBunnies(c, now);
-        busy = true;
-      }
-
+      // 3. water, dirt, drifting seeds and the cursor over everything
       c.fillStyle = this.ink;
       this.drops = this.drops.filter(d => {
         d.y += dt * 0.045;
@@ -1008,9 +1497,9 @@
         c.fillRect(Math.round(q.x), Math.round(q.y), 1, 1);
         return true;
       });
-      if (this.drops.length || this.splashes.length || this.particles.length || now < this.pourUntil || now < this.digUntil || now < (this.touchUntil || 0)) busy = true;
+      if (this.drops.length || this.splashes.length || this.particles.length || now < this.pourUntil || now < this.digUntil || now < (this.scatterUntil || 0) || now < (this.touchUntil || 0)) busy = true;
 
-      this.drawButterflies(c, now);
+      if (this.fluff.length) { this.drawFluff(c, now, dt / 1000); busy = true; }
       this.drawCursor(c, now);
 
       const ctx = this.ctx;
@@ -1030,10 +1519,13 @@
     const text = {
       water: 'click to start watering',
       interact: 'brush the flowers, or touch a critter',
+      scatter: 'click to scatter seeds, then water them',
       dig: 'click a flower to dig it up',
     };
     garden.addEventListener('modechange', e => { hint.textContent = text[e.detail.mode]; hint.classList.remove('hidden'); });
     garden.addEventListener('pointerdown', () => hint.classList.add('hidden'));
+    // the page switches to night colours along with the garden
+    garden.addEventListener('nightchange', e => document.body.classList.toggle('night', e.detail.night));
   })();
 </script>
 </body>
