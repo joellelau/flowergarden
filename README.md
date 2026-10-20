@@ -2,7 +2,7 @@
 
 A tiny interactive pixel garden. Click to water the ground and a pixel flower grows; water it again and it gets bigger. Plant enough and the garden comes alive with butterflies, a worm, a bunny and, at night, glow worms.
 
-**Live:** https://joellelau.github.io/randomflowers/
+**Live:** https://joellelau.github.io/flowergarden/
 
 ![The pixel garden: flowers, a bunny, butterflies and a worm](preview.png)
 
