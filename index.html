@@ -185,6 +185,40 @@
     '##########  #e##   ',
     '###            ##  ',
   ];
+  const STARTLE = ['##', '##', '##', '  ', '##'];   // the '!' over a startled bunny
+  // digging: rump up, head down, front paws scrabbling (two frames)
+  const BUNNY_DIG_A = [
+    '                  ',
+    '                  ',
+    '   ####           ',
+    '  #######    # #  ',
+    ' #########  #e#e# ',
+    '##e######## #e#e# ',
+    '##e###########e#  ',
+    ' ###############  ',
+    '  ##############  ',
+    '   ####eeee#####e##',
+    '   ###########e###',
+    '   ###   ##e##### ',
+    '  ###     ##  ### ',
+    '  ##          ##  ',
+  ];
+  const BUNNY_DIG_B = [
+    '                  ',
+    '                  ',
+    '   ####           ',
+    '  #######    # #  ',
+    ' #########  #e#e# ',
+    '##e######## #e#e# ',
+    '##e###########e#  ',
+    ' ###############  ',
+    '  ##############  ',
+    '   ####eeee#####e##',
+    '   ###########e###',
+    '    ##  ###e##### ',
+    '   ##   ##  ## ## ',
+    '         #    ##  ',
+  ];
   // cursors for the other tools ('o' = paper)
   const HAND = [
     ' #     ',
@@ -811,14 +845,55 @@
       return from ? null : fallback;
     }
 
-    burrow(b, now, quick = false) {
+    // the bunny digs a hole in front of its paws, then dives in head-first
+    // kind: 'startled' (touched: jumps, freezes, then digs), 'quick' (something grew on it),
+    // or 'calm' (just leaving). Every kind ends with a jump head-first into the hole.
+    burrow(b, now, kind = 'startled') {
       if (b.state === 'burrow') return;
+      if (kind === true) kind = 'quick';
       if (b.state === 'hop') { b.x = b.hx1; b.y = b.hy1; }
-      // an emerging bunny goes back down from wherever it got to
-      const left = b.state === 'emerge' ? BURROW_MS - (b.until - now) : BURROW_MS;
-      b.state = 'burrow'; b.until = now + Math.max(200, quick ? Math.min(left, 380) : left);
-      b.burrowMs = b.until - now;
-      this.burst(b.x, b.y, 10, 0.8);
+      const wasEmerging = b.state === 'emerge';
+      b.state = 'burrow'; b.burrowStart = now; b.splashed = false;
+      const T = wasEmerging ? [0, 0, 0, 520]               // already has its hole: straight back in
+              : kind === 'quick' ? [170, 0, 220, 620]
+              : kind === 'calm' ? [0, 0, 480, 760]
+              : [280, 600, 480, 760];
+      [b.startleMs, b.pauseMs, b.digMs, b.diveMs] = T;
+      b.digAt = now + b.startleMs + b.pauseMs;
+      b.diveAt = b.digAt + b.digMs;
+      b.until = b.diveAt + b.diveMs;
+      // dig on whichever side has open ground (turning round if it must);
+      // with no room either side, it digs straight down where it is
+      const fits = f => this.bunnyFree(b.x + f * 7, b.y, 0);
+      const face = fits(b.face) ? b.face : fits(-b.face) ? -b.face : 0;
+      if (face) b.face = face;
+      b.hx = Math.round(b.x + face * 7); b.hy = Math.round(b.y);
+      b.px = Math.round(b.x - b.face * (BUNNY_W / 2 + 4));   // where the kicked-out dirt piles up
+      b.nextDirt = b.digAt;
+    }
+
+    // dirt holes left behind, filling back in
+    drawHoles(c, now) {
+      this.holes = (this.holes || []).filter(h => now < h.until);
+      for (const h of this.holes) { const w = 1 - clamp01((now - h.until + 1600) / 1600); this.drawHole(c, h.x, h.y, w, h.px, h.mound * w); }
+    }
+
+    // w: how open the hole is (0..1); px: where the dug-out dirt is piled; mound: how big the pile is (0..1)
+    drawHole(c, x, y, w, px, mound) {
+      const dot = (xx, yy) => { c.fillStyle = this.ink; c.fillRect(xx, yy, 1, 1); };
+      const r = Math.round(4 * w);
+      for (let dx = -r; dx <= r; dx++) {
+        dot(x + dx, y);
+        if (Math.abs(dx) < r - 1) dot(x + dx, y + 1);        // the dark pit
+      }
+      if (r > 1) { dot(x - r - 1, y - 1); dot(x + r + 1, y - 1); }   // rim
+      // a dithered pile of the kicked-out dirt
+      if (px == null || mound <= 0) return;
+      const half = Math.round(5 * mound);
+      for (let dx = -half; dx <= half; dx++) {
+        const xx = px + dx, hgt = Math.round(Math.cos((dx / (half + 1)) * Math.PI / 2) * 3 * mound);
+        for (let yy = 0; yy <= hgt; yy++) if (yy === 0 || ((xx + y - yy) & 1) === 0) dot(xx, y - yy);
+      }
     }
 
     updateBunnies(now) {
@@ -832,11 +907,26 @@
         } else if (spot) this.bunnies.push({ x: spot.sx, y: spot.y, tx: spot.x, ty: spot.y, state: 'pause', until: now, face: spot.sx < 0 ? 1 : -1 });
         this.nextBunny = now + 1500;
       }
-      if (active.length > want) active.slice(want).forEach(b => this.burrow(b, now));
+      if (active.length > want) active.slice(want).forEach(b => this.burrow(b, now, 'calm'));
 
       for (const b of this.bunnies) {
         if (b.state === 'burrow') {
-          if (now >= b.until) { b.gone = true; this.nextBunny = now + rand(7000, 13000); }
+          if (now >= b.digAt && now < b.diveAt && now >= b.nextDirt) {
+            // dirt flies out from under its paws, back over its shoulder
+            const rear = b.x - b.face * (BUNNY_W / 2 - 1);
+            for (let i = 0; i < 3; i++)
+              this.particles.push({ x: rear + rand(-1, 1), y: b.hy - 2, vx: -b.face * rand(10, 22), vy: -rand(26, 40), born: now, floor: b.hy });
+            b.nextDirt = now + rand(70, 120);
+          }
+          if (!b.splashed && now >= b.diveAt + b.diveMs * 0.62) {
+            b.splashed = true;
+            for (let i = 0; i < 9; i++)
+              this.particles.push({ x: b.hx + rand(-3, 3), y: b.hy - 1, vx: rand(-14, 14), vy: -rand(14, 28), born: now, floor: b.hy });
+          }
+          if (now >= b.until) {
+            b.gone = true; this.nextBunny = now + rand(7000, 13000);
+            (this.holes = this.holes || []).push({ x: b.hx, y: b.hy, px: b.px, face: b.face, mound: 1, until: now + 2600 });
+          }
           continue;
         }
         if (b.state === 'emerge') {
@@ -879,7 +969,7 @@
         const nx = b.x + dx * step, ny = b.y;
         if (!this.pathFree(b.x, b.y, nx, ny)) {   // something grew in the way
           const spot = this.bunnySpot(b);
-          if (spot) { b.tx = spot.x; b.ty = spot.y; b.until = now + 150; } else this.burrow(b, now);
+          if (spot) { b.tx = spot.x; b.ty = spot.y; b.until = now + 150; } else this.burrow(b, now, 'calm');
           continue;
         }
         b.face = dx >= 0 ? 1 : -1;
@@ -897,10 +987,35 @@
           x = b.hx0 + (b.hx1 - b.hx0) * t;
           y = b.hy0 + (b.hy1 - b.hy0) * t - Math.sin(Math.PI * t) * HOP_ARC;
           rows = t > 0.2 && t < 0.8 ? BUNNY_HOP : BUNNY_SIT;
-        } else if (b.state === 'burrow' || b.state === 'emerge') {
-          const t = clamp01(1 - (b.until - now) / (b.state === 'burrow' ? b.burrowMs || BURROW_MS : BURROW_MS));
-          sink = Math.round((b.state === 'burrow' ? easeOut(t) : 1 - easeOut(t)) * (BUNNY_H + 1));
-          rows = b.state === 'burrow' ? BUNNY_NIB : BUNNY_SIT;
+        } else if (b.state === 'burrow') {
+          const ts = now - b.burrowStart;
+          if (ts < b.startleMs) {
+            // startled: a little jump straight up, ears up
+            y = b.y - Math.sin(Math.PI * ts / b.startleMs) * 3;
+          } else if (now < b.digAt) {
+            // frozen for a moment
+          } else if (now < b.diveAt) {
+            // digging: paws scrabble, body jiggles, the hole opens up
+            const td = now - b.digAt;
+            rows = Math.floor(td / 95) % 2 ? BUNNY_DIG_B : BUNNY_DIG_A;
+            x = b.x + (Math.floor(td / 95) % 2 ? 0.6 : -0.4) * b.face;
+          } else {
+            // the jump: springs up in an arc, then plunges head-first into the hole
+            const t = clamp01((now - b.diveAt) / b.diveMs), H = 7;
+            if (t < 0.42) {
+              const u = t / 0.42;
+              rows = BUNNY_HOP; x = b.x + (b.hx - b.x) * 0.75 * easeOut(u);
+              y = b.y - Math.sin(u * Math.PI / 2) * H;
+            } else {
+              const u = (t - 0.42) / 0.58;
+              rows = BUNNY_DIG_A; x = b.x + (b.hx - b.x) * (0.75 + 0.25 * u);
+              y = b.y - H + u * u * (H + BUNNY_H + 3);
+            }
+          }
+        } else if (b.state === 'emerge') {
+          const t = clamp01(1 - (b.until - now) / BURROW_MS);
+          sink = Math.round((1 - easeOut(t)) * (BUNNY_H + 1));
+          rows = BUNNY_SIT;
         } else if (b.state === 'sit' && now > b.nibbleAt) {
           // nibble on and off while sitting
           rows = Math.floor((now - b.nibbleAt) / 260) % 4 < 2 ? BUNNY_NIB : BUNNY_SIT;
@@ -908,13 +1023,20 @@
         }
         const w = Math.max(...rows.map(r => r.length)), gy = Math.round(b.y);
         const under = b.state === 'burrow' || b.state === 'emerge';
-        this.drawRows(c, rows, Math.round(x - w / 2), Math.round(y) - rows.length + 1 + sink, b.face < 0, w, under ? gy : Infinity);
-        if (under) {
-          // a little dithered mound of dirt where it went down
-          const dot = (xx, yy) => { c.fillStyle = this.ink; c.fillRect(xx, yy, 1, 1); };
-          const cx = Math.round(b.x);
-          for (let dx = -8; dx <= 8; dx++) if (((cx + dx + gy) & 1) === 0 || Math.abs(dx) < 5) dot(cx + dx, gy);
-          for (let dx = -5; dx <= 5; dx++) if (((cx + dx + gy - 1) & 1) === 0) dot(cx + dx, gy - 1);
+        if (b.state === 'burrow' && now >= b.digAt) {
+          const td = now - b.digAt, open = b.digMs ? clamp01(td / (b.digMs * 0.7)) : 1;
+          this.drawHole(c, b.hx, b.hy, Math.max(0.25, open), b.digMs ? b.px : null, b.digMs ? clamp01((td - 120) / b.digMs) : 0);
+        } else if (b.state === 'emerge') {
+          this.drawHole(c, Math.round(b.x), gy, 0.9, null, 0);
+        }
+        // underground parts are hidden below the ground line
+        const jumping = b.state === 'burrow' && now >= b.diveAt;
+        this.drawRows(c, rows, Math.round(x - w / 2), Math.round(y) - rows.length + 1 + sink, b.face < 0, w,
+                      under && (b.state !== 'burrow' || jumping) ? gy - 1 : Infinity);
+        // a '!' over its head while it's startled and frozen
+        if (b.state === 'burrow' && b.startleMs && now < b.digAt) {
+          const top = Math.round(y) - BUNNY_SIT.length + 1;
+          this.drawRows(c, STARTLE, Math.round(x) + b.face * 3, top - 7);
         }
       }
     }
@@ -1207,7 +1329,7 @@
 
     clear() {
       this.plants = []; this.drops = []; this.splashes = []; this.butterflies = []; this.worm = null; this.bunnies = []; this.particles = [];
-      this.seeds = []; this.sparrows = []; this.fluff = []; this.glows = [];
+      this.seeds = []; this.sparrows = []; this.fluff = []; this.glows = []; this.holes = [];
       this.gridDirty = true;
       this.redrawStill(); this.kick();
     }
@@ -1437,6 +1559,10 @@
         this.updateBunnies(now);
         this.drawWorm(c, now);
         this.drawBunnies(c, now);
+        busy = true;
+      }
+      if (this.holes && this.holes.length) {
+        this.drawHoles(c, now);
         busy = true;
       }
       this.drawSeeds(c, now);
